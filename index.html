@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Thumb Juggling</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #111;
+    touch-action: none;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  #app {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+  }
+  #canvas {
+    display: block;
+    width: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+    touch-action: none;
+  }
+  #counter {
+    position: fixed;
+    top: calc(14px + env(safe-area-inset-top));
+    right: 18px;
+    color: #eee;
+    font-size: 28px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.5px;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+    pointer-events: none;
+    user-select: none;
+    text-align: right;
+  }
+  #counter span {
+    display: block;
+    font-size: 10px;
+    font-weight: 400;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  #sheetHandle {
+    flex: 0 0 auto;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    touch-action: none;
+  }
+  #sheetHandle::before {
+    content: '';
+    width: 40px;
+    height: 4px;
+    border-radius: 2px;
+    background: #555;
+  }
+  #controls {
+    flex: 0 0 auto;
+    overflow: hidden;
+    max-height: 260px;
+    padding: 0 20px;
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    transition: max-height 0.28s ease, padding 0.28s ease;
+    touch-action: pan-y;
+  }
+  #controls.hidden {
+    max-height: 0;
+  }
+  #controls .control-row:first-child {
+    margin-top: 12px;
+  }
+  #controls .control-row:last-child {
+    margin-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+  .control-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  input[type="range"] {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 3px;
+    background: #444;
+    outline: none;
+    border-radius: 2px;
+    touch-action: manipulation;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #eee;
+    cursor: pointer;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #eee;
+    border: none;
+    cursor: pointer;
+  }
+  label {
+    width: 130px;
+    flex: 0 0 auto;
+    color: #888;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+<canvas id="canvas"></canvas>
+
+<div id="counter">0<span>catches</span></div>
+
+<div id="controls">
+  <div class="control-row">
+    <label for="ballCountSlider">Balls</label>
+    <input type="range" id="ballCountSlider" min="1" max="7" value="3" step="1">
+  </div>
+  <div class="control-row">
+    <label for="gravitySlider">Gravity</label>
+    <input type="range" id="gravitySlider" min="0" max="100" value="35">
+  </div>
+  <div class="control-row">
+    <label for="viscositySlider">Air Viscosity</label>
+    <input type="range" id="viscositySlider" min="0" max="100" value="0">
+  </div>
+  <div class="control-row">
+    <label for="sizeSlider">Ball size</label>
+    <input type="range" id="sizeSlider" min="18" max="60" value="36">
+  </div>
+</div>
+
+<div id="sheetHandle"></div>
+</div>
+
+<script>
+(function() {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const ballCountSlider = document.getElementById('ballCountSlider');
+  const gravitySlider = document.getElementById('gravitySlider');
+  const viscositySlider = document.getElementById('viscositySlider');
+  const sizeSlider = document.getElementById('sizeSlider');
+  const controls = document.getElementById('controls');
+  const sheetHandle = document.getElementById('sheetHandle');
+  const counterEl = document.getElementById('counter');
+
+  // bottom sheet drag/toggle
+  let sheetHidden = false;
+  let sheetDragStartY = null;
+  let sheetDragging = false;
+
+  function setSheetHidden(hidden) {
+    sheetHidden = hidden;
+    controls.classList.toggle('hidden', hidden);
+  }
+
+  sheetHandle.addEventListener('pointerdown', (e) => {
+    sheetDragStartY = e.clientY;
+    sheetDragging = true;
+    sheetHandle.setPointerCapture(e.pointerId);
+  });
+  sheetHandle.addEventListener('pointermove', (e) => {
+    if (!sheetDragging) return;
+    const dy = e.clientY - sheetDragStartY;
+    if (dy > 24) setSheetHidden(true);
+    if (dy < -24) setSheetHidden(false);
+  });
+  sheetHandle.addEventListener('pointerup', () => { sheetDragging = false; });
+  sheetHandle.addEventListener('pointercancel', () => { sheetDragging = false; });
+  sheetHandle.addEventListener('click', () => setSheetHidden(!sheetHidden));
+
+  let W, H;
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    W = canvas.width = rect.width * devicePixelRatio;
+    H = canvas.height = rect.height * devicePixelRatio;
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+  new ResizeObserver(resize).observe(canvas);
+
+  // Irish flag palette, cycles for ball counts beyond 3
+  const COLORS = ['#169b62', '#ffffff', '#ff883e'];
+
+  function makeBall(index) {
+    return {
+      x: vw() * (0.3 + Math.random() * 0.4),
+      y: vh() * (0.2 + Math.random() * 0.2),
+      vx: 0,
+      vy: 0,
+      r: ballRadius,
+      color: COLORS[index % COLORS.length],
+      grabbed: false,
+      pointerId: null,
+      resting: false // true once it has touched the floor while ungrabbed
+    };
+  }
+  const RESTITUTION = 0.72;
+  const FRICTION = 0.995;
+  const FLOOR_MARGIN = 46; // keep balls clear of the sheet handle so grabbing near the floor doesn't open it
+
+  function vw() { return canvas.getBoundingClientRect().width; }
+  function vh() { return canvas.getBoundingClientRect().height; }
+
+  function bindSlider(el, transform, onChange) {
+    const apply = () => onChange(transform(parseFloat(el.value)));
+    el.addEventListener('input', apply);
+    apply();
+  }
+
+  let ballRadius = parseFloat(sizeSlider.value);
+
+  let balls = [];
+  for (let i = 0; i < 3; i++) balls.push(makeBall(i));
+
+  bindSlider(sizeSlider, v => v, v => {
+    ballRadius = v;
+    for (const b of balls) b.r = ballRadius;
+  });
+
+  bindSlider(ballCountSlider, v => Math.round(v), (count) => {
+    while (balls.length < count) balls.push(makeBall(balls.length));
+    while (balls.length > count) {
+      // remove an ungrabbed ball if possible, otherwise the last one
+      const idx = balls.findIndex(b => !b.grabbed);
+      balls.splice(idx === -1 ? balls.length - 1 : idx, 1);
+    }
+  });
+
+  let catches = 0;
+  function setCatches(n) {
+    catches = n;
+    counterEl.firstChild.textContent = catches;
+  }
+
+  let gravity;
+  bindSlider(gravitySlider, v => v / 100 * 1800, v => gravity = v); // px/s^2
+
+  let viscosity;
+  bindSlider(viscositySlider, v => v / 100 * 0.006, v => viscosity = v); // quadratic drag coeff
+
+  // pointer tracking for velocity calculation
+  const pointerHistory = new Map(); // pointerId -> [{x,y,t}]
+
+  function getPos(e) {
+    return { x: e.clientX, y: e.clientY };
+  }
+
+  function findBallAt(x, y) {
+    for (let i = balls.length - 1; i >= 0; i--) {
+      const b = balls[i];
+      if (b.grabbed) continue;
+      const dx = x - b.x, dy = y - b.y;
+      if (dx * dx + dy * dy <= (b.r * 1.4) * (b.r * 1.4)) return b;
+    }
+    return null;
+  }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    const { x, y } = getPos(e);
+    const ball = findBallAt(x, y);
+
+    if (!ball) {
+      if (!sheetHidden) setSheetHidden(true);
+      return;
+    }
+    // was this a catch of an airborne, previously-tossed ball?
+    const wasAirborne = !ball.resting;
+    if (wasAirborne) setCatches(catches + 1);
+
+    ball.grabbed = true;
+    ball.pointerId = e.pointerId;
+    ball.vx = 0;
+    ball.vy = 0;
+    pointerHistory.set(e.pointerId, [{ x, y, t: performance.now() }]);
+    canvas.setPointerCapture(e.pointerId);
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    const ball = balls.find(b => b.pointerId === e.pointerId && b.grabbed);
+    if (!ball) return;
+    const { x, y } = getPos(e);
+    ball.x = x;
+    ball.y = y;
+
+    const hist = pointerHistory.get(e.pointerId);
+    hist.push({ x, y, t: performance.now() });
+    while (hist.length > 6) hist.shift();
+  });
+
+  function releaseBall(pointerId) {
+    const ball = balls.find(b => b.pointerId === pointerId && b.grabbed);
+    if (!ball) return;
+    const hist = pointerHistory.get(pointerId);
+    if (hist && hist.length >= 2) {
+      const first = hist[0];
+      const last = hist[hist.length - 1];
+      const dt = (last.t - first.t) / 1000;
+      if (dt > 0) {
+        ball.vx = (last.x - first.x) / dt;
+        ball.vy = (last.y - first.y) / dt;
+      }
+    }
+    ball.grabbed = false;
+    ball.pointerId = null;
+    ball.resting = false; // it's airborne again once tossed
+    pointerHistory.delete(pointerId);
+  }
+
+  const onPointerRelease = (e) => releaseBall(e.pointerId);
+  canvas.addEventListener('pointerup', onPointerRelease);
+  canvas.addEventListener('pointercancel', onPointerRelease);
+
+  let lastT = performance.now();
+
+  // clamps a ball inside [min, max] along one axis and reflects its velocity;
+  // returns 'min', 'max', or null depending which bound (if any) was hit
+  function resolveBoundary(b, posKey, velKey, min, max) {
+    if (b[posKey] - b.r < min) {
+      b[posKey] = min + b.r;
+      b[velKey] *= -RESTITUTION;
+      return 'min';
+    }
+    if (b[posKey] + b.r > max) {
+      b[posKey] = max - b.r;
+      b[velKey] *= -RESTITUTION;
+      return 'max';
+    }
+    return null;
+  }
+
+  function step(now) {
+    let dt = (now - lastT) / 1000;
+    dt = Math.min(dt, 0.033); // clamp for stability
+    lastT = now;
+
+    const width = vw();
+    const height = vh() - FLOOR_MARGIN;
+
+    for (const b of balls) {
+      if (b.grabbed) continue;
+
+      b.vy += gravity * dt;
+
+      // quadratic drag (air thickness)
+      const speed = Math.sqrt(b.vx * b.vx + b.vy * b.vy);
+      if (speed > 0 && viscosity > 0) {
+        const dragMag = viscosity * speed * speed * dt;
+        const dragScale = Math.max(0, 1 - dragMag / speed);
+        b.vx *= dragScale;
+        b.vy *= dragScale;
+      }
+
+      b.vx *= FRICTION;
+      b.vy *= FRICTION;
+
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+
+      // floor / ceiling
+      const vHit = resolveBoundary(b, 'y', 'vy', 0, height);
+      if (vHit === 'max') {
+        b.vx *= 0.9;
+        if (!b.resting) {
+          // this is a drop: ball hit the floor without being caught
+          setCatches(0);
+        }
+        b.resting = true;
+      }
+
+      // walls
+      resolveBoundary(b, 'x', 'vx', 0, width);
+    }
+
+    // simple ball-ball collision
+    for (let i = 0; i < balls.length; i++) {
+      for (let j = i + 1; j < balls.length; j++) {
+        const a = balls[i], b = balls[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const minDist = a.r + b.r;
+        if (dist > 0 && dist < minDist) {
+          const overlap = (minDist - dist) / 2;
+          const nx = dx / dist, ny = dy / dist;
+          if (!a.grabbed) { a.x -= nx * overlap; a.y -= ny * overlap; }
+          if (!b.grabbed) { b.x += nx * overlap; b.y += ny * overlap; }
+          if (!a.grabbed && !b.grabbed) {
+            const tempVx = a.vx, tempVy = a.vy;
+            a.vx = b.vx * RESTITUTION;
+            a.vy = b.vy * RESTITUTION;
+            b.vx = tempVx * RESTITUTION;
+            b.vy = tempVy * RESTITUTION;
+          }
+        }
+      }
+    }
+
+    ctx.clearRect(0, 0, width, vh());
+
+    // floor marker, dashed line at the physics floor y
+    ctx.save();
+    ctx.strokeStyle = '#444';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    ctx.moveTo(0, height);
+    ctx.lineTo(width, height);
+    ctx.stroke();
+    ctx.restore();
+
+    for (const b of balls) {
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      ctx.fillStyle = b.color;
+      ctx.fill();
+
+      if (b.grabbed) {
+        // shine: larger outer glow ring so it peeks out from under the thumb
+        ctx.save();
+        ctx.shadowColor = 'rgba(255,255,255,0.95)';
+        ctx.shadowBlur = 30;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.r * 1.35, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.lineWidth = 5;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    requestAnimationFrame(step);
+  }
+
+  requestAnimationFrame(step);
+})();
+</script>
+
+</body>
+</html>
