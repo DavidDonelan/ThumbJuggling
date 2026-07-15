@@ -48,6 +48,84 @@
     text-transform: uppercase;
     letter-spacing: 1px;
   }
+  #shapeToggle {
+    position: fixed;
+    top: calc(14px + env(safe-area-inset-top));
+    left: 18px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid #444;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #eee;
+    font-size: 18px;
+    z-index: 5;
+    touch-action: manipulation;
+  }
+  #imageUploadBtn {
+    position: fixed;
+    top: calc(14px + env(safe-area-inset-top));
+    left: 66px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid #444;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #eee;
+    font-size: 18px;
+    z-index: 5;
+    touch-action: manipulation;
+  }
+  #cropModal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.92);
+    z-index: 10;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    padding: 20px;
+  }
+  #cropModal.open { display: flex; }
+  #cropCanvas {
+    touch-action: none;
+    border-radius: 8px;
+    background: #111;
+  }
+  #cropControls {
+    width: 100%;
+    max-width: 320px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  #cropControls .control-row { display: flex; align-items: center; gap: 12px; }
+  #cropButtons {
+    width: 100%;
+    max-width: 320px;
+    display: flex;
+    gap: 12px;
+  }
+  #cropButtons button {
+    flex: 1;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid #444;
+    background: rgba(255,255,255,0.08);
+    color: #eee;
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  #cropConfirm { background: #169b62; border-color: #169b62; }
   #sheetHandle {
     flex: 0 0 auto;
     height: 26px;
@@ -132,6 +210,24 @@
 <div id="app">
 <canvas id="canvas"></canvas>
 
+<button id="shapeToggle" aria-label="Toggle balls or knives">🔪</button>
+<button id="imageUploadBtn" aria-label="Upload image for balls">🖼️</button>
+<input type="file" id="imageInput" accept="image/*" style="display:none">
+
+<div id="cropModal">
+  <canvas id="cropCanvas" width="300" height="300"></canvas>
+  <div id="cropControls">
+    <div class="control-row">
+      <label for="zoomSlider">Zoom</label>
+      <input type="range" id="zoomSlider" min="100" max="300" value="100">
+    </div>
+  </div>
+  <div id="cropButtons">
+    <button id="cropCancel">Cancel</button>
+    <button id="cropConfirm">Use image</button>
+  </div>
+</div>
+
 <div id="counter">0<span>catches</span></div>
 
 <div id="controls">
@@ -151,6 +247,10 @@
     <label for="sizeSlider">Ball size</label>
     <input type="range" id="sizeSlider" min="18" max="60" value="36">
   </div>
+  <div class="control-row">
+    <label for="imageOverlapSlider">Image size</label>
+    <input type="range" id="imageOverlapSlider" min="100" max="160" value="118">
+  </div>
 </div>
 
 <div id="sheetHandle"></div>
@@ -164,9 +264,19 @@
   const gravitySlider = document.getElementById('gravitySlider');
   const viscositySlider = document.getElementById('viscositySlider');
   const sizeSlider = document.getElementById('sizeSlider');
+  const imageOverlapSlider = document.getElementById('imageOverlapSlider');
   const controls = document.getElementById('controls');
   const sheetHandle = document.getElementById('sheetHandle');
   const counterEl = document.getElementById('counter');
+  const shapeToggle = document.getElementById('shapeToggle');
+  const imageUploadBtn = document.getElementById('imageUploadBtn');
+  const imageInput = document.getElementById('imageInput');
+  const cropModal = document.getElementById('cropModal');
+  const cropCanvas = document.getElementById('cropCanvas');
+  const cropCtx = cropCanvas.getContext('2d');
+  const zoomSlider = document.getElementById('zoomSlider');
+  const cropCancel = document.getElementById('cropCancel');
+  const cropConfirm = document.getElementById('cropConfirm');
 
   // bottom sheet drag/toggle
   let sheetHidden = false;
@@ -192,6 +302,118 @@
   sheetHandle.addEventListener('pointerup', () => { sheetDragging = false; });
   sheetHandle.addEventListener('pointercancel', () => { sheetDragging = false; });
   sheetHandle.addEventListener('click', () => setSheetHidden(!sheetHidden));
+
+  // shape mode: 'ball', 'knife', or 'image'
+  let shapeMode = 'ball';
+  let uploadedImage = null;
+
+  shapeToggle.addEventListener('click', () => {
+    shapeMode = shapeMode === 'ball' ? 'knife' : 'ball';
+    shapeToggle.textContent = shapeMode === 'ball' ? '🔪' : '🔴';
+  });
+
+  imageUploadBtn.addEventListener('click', () => imageInput.click());
+
+  const CROP_SIZE = 300;
+  let cropImg = null;
+  let cropScale = 1;      // 1 = image just covers the crop square
+  let cropOffsetX = 0;
+  let cropOffsetY = 0;
+
+  // static dark mask with a circular window, built once and reused every frame
+  const maskCanvas = document.createElement('canvas');
+  maskCanvas.width = CROP_SIZE;
+  maskCanvas.height = CROP_SIZE;
+  (function buildMask() {
+    const m = maskCanvas.getContext('2d');
+    m.fillStyle = 'rgba(0,0,0,0.55)';
+    m.fillRect(0, 0, CROP_SIZE, CROP_SIZE);
+    m.globalCompositeOperation = 'destination-out';
+    m.beginPath();
+    m.arc(CROP_SIZE / 2, CROP_SIZE / 2, CROP_SIZE / 2 - 10, 0, Math.PI * 2);
+    m.fill();
+  })();
+
+  function cropTransform() {
+    const baseScale = Math.max(CROP_SIZE / cropImg.width, CROP_SIZE / cropImg.height) * cropScale;
+    const dw = cropImg.width * baseScale;
+    const dh = cropImg.height * baseScale;
+    const dx = CROP_SIZE / 2 - dw / 2 + cropOffsetX;
+    const dy = CROP_SIZE / 2 - dh / 2 + cropOffsetY;
+    return { dw, dh, dx, dy };
+  }
+
+  function drawCropPreview() {
+    cropCtx.clearRect(0, 0, CROP_SIZE, CROP_SIZE);
+    const { dw, dh, dx, dy } = cropTransform();
+    cropCtx.drawImage(cropImg, dx, dy, dw, dh);
+    cropCtx.drawImage(maskCanvas, 0, 0);
+    cropCtx.beginPath();
+    cropCtx.arc(CROP_SIZE / 2, CROP_SIZE / 2, CROP_SIZE / 2 - 10, 0, Math.PI * 2);
+    cropCtx.strokeStyle = '#eee';
+    cropCtx.lineWidth = 2;
+    cropCtx.stroke();
+  }
+
+  imageInput.addEventListener('change', () => {
+    const file = imageInput.files && imageInput.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        cropImg = img;
+        cropScale = 1;
+        cropOffsetX = 0;
+        cropOffsetY = 0;
+        zoomSlider.value = 100;
+        drawCropPreview();
+        cropModal.classList.add('open');
+      };
+      img.src = reader.result; // data URL, preserves PNG alpha channel
+    };
+    reader.readAsDataURL(file);
+  });
+
+  zoomSlider.addEventListener('input', () => {
+    cropScale = parseFloat(zoomSlider.value) / 100;
+    drawCropPreview();
+  });
+
+  let cropDragging = false;
+  let cropLastX = 0, cropLastY = 0;
+  cropCanvas.addEventListener('pointerdown', (e) => {
+    cropDragging = true;
+    cropLastX = e.clientX;
+    cropLastY = e.clientY;
+    cropCanvas.setPointerCapture(e.pointerId);
+  });
+  cropCanvas.addEventListener('pointermove', (e) => {
+    if (!cropDragging) return;
+    cropOffsetX += e.clientX - cropLastX;
+    cropOffsetY += e.clientY - cropLastY;
+    cropLastX = e.clientX;
+    cropLastY = e.clientY;
+    drawCropPreview();
+  });
+  cropCanvas.addEventListener('pointerup', () => { cropDragging = false; });
+  cropCanvas.addEventListener('pointercancel', () => { cropDragging = false; });
+
+  cropCancel.addEventListener('click', () => {
+    cropModal.classList.remove('open');
+  });
+
+  cropConfirm.addEventListener('click', () => {
+    const baked = document.createElement('canvas');
+    baked.width = CROP_SIZE;
+    baked.height = CROP_SIZE;
+    const bctx = baked.getContext('2d');
+    const { dw, dh, dx, dy } = cropTransform();
+    bctx.drawImage(cropImg, dx, dy, dw, dh);
+    uploadedImage = baked;
+    shapeMode = 'image';
+    cropModal.classList.remove('open');
+  });
 
   let W, H;
   function resize() {
@@ -219,11 +441,14 @@
       color: COLORS[index % COLORS.length],
       grabbed: false,
       pointerId: null,
-      resting: false // true once it has touched the floor while ungrabbed
+      resting: false, // true once it has touched the floor while ungrabbed
+      angle: 0,
+      angularVelocity: 0
     };
   }
   const RESTITUTION = 0.72;
-  const FRICTION = 0.995;//check
+  const FRICTION = 0.995;
+  const ANGULAR_FRICTION = 0.985; // continuous spin decay so tosses don't rotate forever
   const FLOOR_MARGIN = 46; // keep balls clear of the sheet handle so grabbing near the floor doesn't open it
 
   function vw() { return canvas.getBoundingClientRect().width; }
@@ -299,6 +524,7 @@
     ball.pointerId = e.pointerId;
     ball.vx = 0;
     ball.vy = 0;
+    ball.angularVelocity = 0;
     pointerHistory.set(e.pointerId, [{ x, y, t: performance.now() }]);
     canvas.setPointerCapture(e.pointerId);
   });
@@ -331,6 +557,9 @@
     ball.grabbed = false;
     ball.pointerId = null;
     ball.resting = false; // it's airborne again once tossed
+    // spin proportional to toss speed, direction from horizontal throw component
+    const speed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
+    ball.angularVelocity = (ball.vx >= 0 ? 1 : -1) * Math.min(speed / 120, 14);
     pointerHistory.delete(pointerId);
   }
 
@@ -354,6 +583,58 @@
       return 'max';
     }
     return null;
+  }
+
+  let imageOverlap;
+  bindSlider(imageOverlapSlider, v => v / 100, v => imageOverlap = v);
+
+  function drawImageBall(b) {
+    const drawR = b.r * imageOverlap;
+    const size = drawR * 2;
+    const img = uploadedImage;
+    const scale = Math.max(size / img.width, size / img.height);
+    const sw = size / scale, sh = size / scale;
+    const sx = (img.width - sw) / 2, sy = (img.height - sh) / 2;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, drawR, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(b.angle);
+    ctx.drawImage(img, sx, sy, sw, sh, -drawR, -drawR, size, size);
+    ctx.restore();
+  }
+
+  function drawKnife(b) {
+    const len = b.r * 2.4;      // overall length, tip to handle end
+    const bladeLen = len * 0.6;
+    const bladeW = b.r * 0.55;
+    const handleLen = len * 0.4;
+    const handleW = b.r * 0.4;
+
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(b.angle);
+
+    // blade: tapered polygon, tip points toward -x (arbitrary), pivot at center
+    ctx.beginPath();
+    ctx.moveTo(-len * 0.5, 0);                          // tip
+    ctx.lineTo(-len * 0.5 + bladeLen, -bladeW * 0.5);
+    ctx.lineTo(-len * 0.5 + bladeLen, bladeW * 0.5);
+    ctx.closePath();
+    ctx.fillStyle = '#cfd4d8';
+    ctx.fill();
+
+    // handle: rounded rect at the base
+    const hx = len * 0.5 - handleLen;
+    ctx.beginPath();
+    ctx.roundRect(hx, -handleW * 0.5, handleLen, handleW, handleW * 0.3);
+    ctx.fillStyle = '#2b2b2b';
+    ctx.fill();
+
+    ctx.restore();
   }
 
   function step(now) {
@@ -380,14 +661,17 @@
 
       b.vx *= FRICTION;
       b.vy *= FRICTION;
+      b.angularVelocity *= ANGULAR_FRICTION;
 
       b.x += b.vx * dt;
       b.y += b.vy * dt;
+      b.angle += b.angularVelocity * dt;
 
       // floor / ceiling
       const vHit = resolveBoundary(b, 'y', 'vy', 0, height);
       if (vHit === 'max') {
         b.vx *= 0.9;
+        b.angularVelocity *= 0.6;
         if (!b.resting) {
           // this is a drop: ball hit the floor without being caught
           setCatches(0);
@@ -436,10 +720,16 @@
     ctx.restore();
 
     for (const b of balls) {
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-      ctx.fillStyle = b.color;
-      ctx.fill();
+      if (shapeMode === 'image' && uploadedImage) {
+        drawImageBall(b);
+      } else if (shapeMode === 'knife') {
+        drawKnife(b);
+      } else {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+        ctx.fillStyle = b.color;
+        ctx.fill();
+      }
 
       if (b.grabbed) {
         // shine: larger outer glow ring so it peeks out from under the thumb
