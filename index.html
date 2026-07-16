@@ -48,6 +48,10 @@
     text-transform: uppercase;
     letter-spacing: 1px;
   }
+  #highScoreLabel {
+    margin-top: 4px;
+    color: #666;
+  }
   #shapeToggle {
     position: fixed;
     top: calc(14px + env(safe-area-inset-top));
@@ -228,7 +232,7 @@
   </div>
 </div>
 
-<div id="counter">0<span>catches</span></div>
+<div id="counter">0<span>catches</span><span id="highScoreLabel">best 0</span></div>
 
 <div id="controls">
   <div class="control-row">
@@ -268,6 +272,7 @@
   const controls = document.getElementById('controls');
   const sheetHandle = document.getElementById('sheetHandle');
   const counterEl = document.getElementById('counter');
+  const highScoreLabel = document.getElementById('highScoreLabel');
   const shapeToggle = document.getElementById('shapeToggle');
   const imageUploadBtn = document.getElementById('imageUploadBtn');
   const imageInput = document.getElementById('imageInput');
@@ -480,9 +485,14 @@
   });
 
   let catches = 0;
+  let highScore = 0;
   function setCatches(n) {
     catches = n;
     counterEl.firstChild.textContent = catches;
+    if (catches > highScore) {
+      highScore = catches;
+      highScoreLabel.textContent = 'best ' + highScore;
+    }
   }
 
   let gravity;
